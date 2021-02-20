@@ -14,6 +14,7 @@
   + Датчик газов
 */
 
+
 #define LIGHT_PIN A0 // пин фоторезистора
 #define DHT_PIN 3    // пин датчика температуры и влажности
 #define MOTION_PIN 2 // пин датчика движения
@@ -40,6 +41,7 @@ int n = 0;                      // счетчик для чтения в мас�
 
 void setup() {
     Serial.begin(9600);         // установка связи с компьютером
+    espSerial.begin(9600);      // установка связи с esp
     pinMode(LIGHT_PIN, INPUT);  // инициализация фоторезистора
     pinMode(NOISE_PIN, INPUT);  // инициализация микрофона
     pinMode(CO2_PIN, INPUT);    // инициализация датчика CO2
@@ -47,19 +49,17 @@ void setup() {
     pinMode(13, OUTPUT);        // работа со внутренним светодиодом
     digitalWrite(13, LOW);
     for (int i = 0; i < 3; i++) {
-        readToRaw(rawData0, rawData1, rawData2, n); // трижды читаем данные с датчиков, чтобы "прогреть" их
-                                                    // и для корректной работы медианного фильтра
+        readToRaw(rawData0, rawData1, rawData2, n); // трижды читаем данные с датчиков, чтобы "прогреть" их и для корректной работы медианного фильтра
         n++;
         delay(1000);
     }
     timerRead.setInterval(1000, read); // раз в секунду будем читать данные с датчиков
-    timerSend.setInterval(3033, send); // раз в три - передавать. интервал не целый, чтобы 
-                                       // минимизировать вероятность выполнения двух функций одновременно
+    timerSend.setInterval(3033, send); // раз в три - передавать. интервал не целый, чтобы минимизировать вероятность выполнения двух функций одновременно
     for (int i = 0; i < 5; i++) { // сигнализируем об окончании инициализации
         digitalWrite(13, HIGH);
-        delay(50);
+        delay(75);
         digitalWrite(13, LOW);
-        delay(50);
+        delay(75);
     }
 }
 
@@ -80,30 +80,28 @@ void send() {
 }
 
 float readData(int sensor) {
+    if (sensor == 0) {
+        return dht.readTemperature(); // чтение с DHT
+    }
     if (sensor == 1) {
-        return dht.readTemperature();  // чтение с DHT
-        // todo: обработка ошибки nan
+        return dht.readHumidity(); // чтение с DHT
     }
     if (sensor == 2) {
-        return dht.readHumidity(); // чтение с DHT
-        // todo: обработка ошибки nan
+        return 0;
+        // todo: написать работу с MQ-135 (в видео выводилась константа)
     }
     if (sensor == 3) {
-        return 0;
-        // todo: написать работу с MQ-135
-    }
-    if (sensor == 4) {
         if (digitalRead(MOTION_PIN)) return 100; // чтение с датчика движения
         else return 0; 
     }
-    if (sensor == 5) {
+    if (sensor == 4) {
         int light = analogRead(LIGHT_PIN); // чтение с фоторезистора
         int light_percent = map(light, 1023, 0, 0, 100); // преобразование данных
         return light_percent;
     }
-    if (sensor == 6) {
+    if (sensor == 5) {
         int noise = analogRead(NOISE_PIN); // чтение с микрофона
-        int noise_percent = map(noise, 0, 700, 0, 100); // преобразование данных
+        int noise_percent = map(noise, 0, 1023, 0, 100); // преобразование данных
         return noise_percent;
     }
     return -1;
@@ -111,9 +109,9 @@ float readData(int sensor) {
 
 void sendToSerial(float data[]) {
     digitalWrite(13, HIGH);
-    Serial.print("Temperature: ");     Serial.print(data[0]); Serial.println("%");
+    Serial.print("Temperature: ");     Serial.print(data[0]); Serial.println("°C");
     Serial.print("Humidity: ");        Serial.print(data[1]); Serial.println("%");
-    Serial.print("CO2 level: ");       Serial.print(data[2]); Serial.println("°C");
+    Serial.print("CO2 level: ");       Serial.print(data[2]); Serial.println("%");
     if (data[3]) {Serial.println("Motion detected!");}
     else {Serial.println("No motion detected.");}
     Serial.print("Light intensity: "); Serial.print(data[4]); Serial.println("%");
@@ -144,8 +142,7 @@ void medianFilter(float *refRawData0, float *refRawData1, float *refRawData2, fl
 }
 
 void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, int &iter) {
-    for (int k = 0; k < 6; k++) { // к сожалению, на данном этапе не удалось реализовать 
-                                  // работу с двумерным массивом
+    for (int k = 0; k < 6; k++) { // к сожалению, на данном этапе не удалось реализовать работу с двумерным массивом
         // идея проста: данные пишутся "по кругу", то есть при каждом вызове функции 
         // запись идет в разный массив, но ячейки каждого массива перезаписываются каждую третью итерацию
         if (iter == 0)
@@ -154,6 +151,7 @@ void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, int &
             refRawData1[k] = readData(k);
         if (iter == 2)
             refRawData2[k] = readData(k);
+        delay(10);
     }
     iter++;
     if (iter >= 3) iter = 0;

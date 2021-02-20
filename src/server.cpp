@@ -3,7 +3,6 @@
 #include <BlynkSimpleEsp8266.h>
 
 char auth[] = "YOUR BLYNK TOKEN"; // Blynk Auth Token
-
 char ssid[] = "YOUR NETWORK NAME"; // Network name
 char pass[] = "YOUR NETWORK PASSWORD"; // Network password
 
@@ -40,5 +39,6 @@ void setup()
 void loop()
 {
   Blynk.run(); // необходимо для работы Blynk
-  if (Serial.available()) readFromArduino(); // если в Serial есть информация - читаем и передаем ее
+  if (Serial.available()) readFromArduino(); // если в Serial есть информация -
+                                             // читаем и передаем ее
 }
