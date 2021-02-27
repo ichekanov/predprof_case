@@ -21,15 +21,15 @@
 #define NOISE_PIN A1 // пин датчика шума
 #define CO2_PIN A2   // пин датчика газов
 SoftwareSerial espSerial(10, 11); // инициализация второго Serial порта для esp
-SimpleTimer timerRead; // инициализация таймеров
+SimpleTimer timerRead;            // инициализация таймеров
 SimpleTimer timerSend;
+DHT dht(DHT_PIN, DHT11);          // инициализация датчика температуры
 
 float rawData0[6]; // три массива с сырыми данными, обновляющимися по очереди
 float rawData1[6];
 float rawData2[6];
 float data[6];     // массив с отфильтрованными данными
 
-DHT dht(DHT_PIN, DHT11);        // инициализация датчика температуры
 void read();                    // функция, упрощающая работу с таймером
 void send();                    // функция, упрощающая работу с таймером
 float readData(int sensor);     // функция универсального чтения для всех датчиков
@@ -37,7 +37,7 @@ void sendToSerial(float data[]);// передача данных на компь
 void sendToEsp(float data[]);   // передача данных на esp
 void medianFilter(float *refRawData0, float *refRawData1, float *refRawData2, float* refData); // медианный фильтр для защиты от некорректных данных
 void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, int &iter); // чтение в массив с сырыми данными
-int n = 0;                      // счетчик для чтения в массив с сырыми данными
+byte n = 0;                      // счетчик для чтения в массив с сырыми данными
 
 void setup() {
     Serial.begin(9600);         // установка связи с компьютером
@@ -49,12 +49,14 @@ void setup() {
     pinMode(13, OUTPUT);        // работа со внутренним светодиодом
     digitalWrite(13, LOW);
     for (int i = 0; i < 3; i++) {
-        readToRaw(rawData0, rawData1, rawData2, n); // трижды читаем данные с датчиков, чтобы "прогреть" их и для корректной работы медианного фильтра
+        readToRaw(rawData0, rawData1, rawData2, n); // трижды читаем данные с датчиков, чтобы "прогреть" их
+                                                    // и для корректной работы медианного фильтра
         n++;
         delay(1000);
     }
     timerRead.setInterval(1000, read); // раз в секунду будем читать данные с датчиков
-    timerSend.setInterval(3033, send); // раз в три - передавать. интервал не целый, чтобы минимизировать вероятность выполнения двух функций одновременно
+    timerSend.setInterval(3033, send); // раз в три - передавать. интервал не целый, чтобы 
+                                       // минимизировать вероятность выполнения двух функций одновременно
     for (int i = 0; i < 5; i++) { // сигнализируем об окончании инициализации
         digitalWrite(13, HIGH);
         delay(75);
@@ -69,14 +71,14 @@ void loop() {
     timerSend.run(); // этот таймер раз в три секунду передает данные дальше
 }
 
-void read() { // читаем данные с датчиков. функция выглядит странной из-за особенностей библиотеки SimpleTimer
+void read() { // читаем данные с датчиков
     readToRaw(rawData0, rawData1, rawData2, n);
 }
 
 void send() {
     medianFilter(rawData0, rawData1, rawData2, data); // прогоняем прочитанные данные через фильтр
-    sendToSerial(data); // отсылаем их на ПК
-    sendToEsp(data);    // и в esp
+        sendToEsp(data); // отправляем их в esp
+    sendToSerial(data);  // и на ПК
 }
 
 float readData(int sensor) {
