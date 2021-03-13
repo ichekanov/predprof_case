@@ -2,7 +2,7 @@
 #include <DHT.h>              // библиотека для работы с DHT11
 #include <Adafruit_Sensor.h>  // библиотека для работы с MQ-135
 #include <SoftwareSerial.h>   // библиотека для передачи данных в esp
-#include <SimpleTimer.h>      // библиотека таймера, упрощает выполнение интервальных действий
+#include <MQ135.h>            // библиотека для работы с MQ-135
 
 /*
 Датчики: 
@@ -14,34 +14,33 @@
   + Датчик газов
 */
 
-
 #define LIGHT_PIN A0 // пин фоторезистора
 #define DHT_PIN 3    // пин датчика температуры и влажности
 #define MOTION_PIN 2 // пин датчика движения
 #define NOISE_PIN A1 // пин датчика шума
 #define CO2_PIN A2   // пин датчика газов
-SoftwareSerial espSerial(10, 11); // инициализация второго Serial порта для esp
-SimpleTimer timerRead;            // инициализация таймеров
-SimpleTimer timerSend;
+SoftwareSerial espSerial(10, 11); // инициализация второго Serial порта для esp (recieve, transmit)
 DHT dht(DHT_PIN, DHT11);          // инициализация датчика температуры
+MQ135 mq(CO2_PIN);
 
 float rawData0[6]; // три массива с сырыми данными, обновляющимися по очереди
 float rawData1[6];
 float rawData2[6];
 float data[6];     // массив с отфильтрованными данными
+byte n = 0;        // счетчик для чтения в массив с сырыми данными
+unsigned long last_read = 0;
 
-void read();                    // функция, упрощающая работу с таймером
-void send();                    // функция, упрощающая работу с таймером
 float readData(int sensor);     // функция универсального чтения для всех датчиков
 void sendToSerial(float data[]);// передача данных на компьютер
 void sendToEsp(float data[]);   // передача данных на esp
 void medianFilter(float *refRawData0, float *refRawData1, float *refRawData2, float* refData); // медианный фильтр для защиты от некорректных данных
-void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, int &iter); // чтение в массив с сырыми данными
-byte n = 0;                      // счетчик для чтения в массив с сырыми данными
+void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, byte &iter); // чтение в массив с сырыми данными
+
 
 void setup() {
     Serial.begin(9600);         // установка связи с компьютером
-    espSerial.begin(9600);      // установка связи с esp
+    espSerial.begin(9600);
+    espSerial.setTimeout(50);   // таймаут для получения данных от esp
     pinMode(LIGHT_PIN, INPUT);  // инициализация фоторезистора
     pinMode(NOISE_PIN, INPUT);  // инициализация микрофона
     pinMode(CO2_PIN, INPUT);    // инициализация датчика CO2
@@ -54,9 +53,6 @@ void setup() {
         n++;
         delay(1000);
     }
-    timerRead.setInterval(1000, read); // раз в секунду будем читать данные с датчиков
-    timerSend.setInterval(3033, send); // раз в три - передавать. интервал не целый, чтобы 
-                                       // минимизировать вероятность выполнения двух функций одновременно
     for (int i = 0; i < 5; i++) { // сигнализируем об окончании инициализации
         digitalWrite(13, HIGH);
         delay(75);
@@ -65,21 +61,24 @@ void setup() {
     }
 }
 
+
 void loop() {
-    // nothing to do :)
-    timerRead.run(); // этот таймер стартует раз в секунду и читает данные с датчиков
-    timerSend.run(); // этот таймер раз в три секунду передает данные дальше
+    if (last_read - millis() > 1000) {
+        last_read = millis();
+        readToRaw(rawData0, rawData1, rawData2, n);
+    }
+    if (espSerial.available()) {
+        String message = espSerial.readString();
+        Serial.print("Recieved from ESP: ");
+        Serial.println(message);
+        if (message == "$get") {
+            medianFilter(rawData0, rawData1, rawData2, data); // прогоняем прочитанные данные через фильтр
+            sendToEsp(data); // отправляем их в esp
+            sendToSerial(data);  // и на ПК
+        }
+    }
 }
 
-void read() { // читаем данные с датчиков
-    readToRaw(rawData0, rawData1, rawData2, n);
-}
-
-void send() {
-    medianFilter(rawData0, rawData1, rawData2, data); // прогоняем прочитанные данные через фильтр
-        sendToEsp(data); // отправляем их в esp
-    sendToSerial(data);  // и на ПК
-}
 
 float readData(int sensor) {
     if (sensor == 0) {
@@ -89,8 +88,7 @@ float readData(int sensor) {
         return dht.readHumidity(); // чтение с DHT
     }
     if (sensor == 2) {
-        return 0;
-        // todo: написать работу с MQ-135 (в видео выводилась константа)
+        return mq.getPPM(); // чтение с MQ-135
     }
     if (sensor == 3) {
         if (digitalRead(MOTION_PIN)) return 100; // чтение с датчика движения
@@ -109,6 +107,7 @@ float readData(int sensor) {
     return -1;
 }
 
+
 void sendToSerial(float data[]) {
     digitalWrite(13, HIGH);
     Serial.print("Temperature: ");     Serial.print(data[0]); Serial.println("°C");
@@ -122,6 +121,7 @@ void sendToSerial(float data[]) {
     digitalWrite(13, LOW);
 }
 
+
 void sendToEsp(float data[]) {
     // данные отправляются в виде x,y,z,a,b,c (шесть переменных, разделенных запятой)
     // температура, влажность, CO2, движение, освещенность, шум
@@ -131,6 +131,7 @@ void sendToEsp(float data[]) {
     }
     espSerial.print(data[5]);
 }
+
 
 void medianFilter(float *refRawData0, float *refRawData1, float *refRawData2, float* refData) {
     // для каждого из шести элементов массива rawData нужно выбрать медианный и записать его в data
@@ -143,8 +144,9 @@ void medianFilter(float *refRawData0, float *refRawData1, float *refRawData2, fl
     }
 }
 
-void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, int &iter) {
-    for (int k = 0; k < 6; k++) { // к сожалению, на данном этапе не удалось реализовать работу с двумерным массивом
+void readToRaw(float *refRawData0, float *refRawData1, float *refRawData2, byte &iter) {
+    for (int k = 0; k < 6; k++) { // к сожалению, на данном этапе не удалось реализовать 
+                                  // работу с двумерным массивом
         // идея проста: данные пишутся "по кругу", то есть при каждом вызове функции 
         // запись идет в разный массив, но ячейки каждого массива перезаписываются каждую третью итерацию
         if (iter == 0)
