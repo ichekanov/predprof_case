@@ -4,9 +4,11 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <BlynkSimpleEsp8266.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 //*************** Настройка вывода отладочных сообщений ***************//
-//#define DEBUG  // закомментрировать эту строку чтобы отключить вывод информации
+//#define DEBUG  // закомментрировать эту строку чтобы отключить вывод отладочной информации
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
 #else
@@ -14,40 +16,54 @@
 #endif
 
 //************************* Задание постоянных ************************//
-#define SERVER_NAME "your MQTT server address"
-#define SERVER_PORT  8080
-#define SERVER_USERNAME "your MQTT username"
-#define SERVER_PASSWORD "your MQTT password"
-#define NETWORK_SSID "your network name"
-#define NETWORK_PASS "your network password"
+#define SERVER_NAME "srv1.clusterfly.ru"
+#define SERVER_PORT  9124
+#define SERVER_USERNAME "--- your mqtt username ---"
+#define SERVER_PASSWORD "--- your mqtt password ---"
+#define NETWORK_SSID "--- your wifi username ---"
+#define NETWORK_PASS "--- your wifi password ---"
 const char topic_debug[] = SERVER_USERNAME "/debug";
 const char topic_data[] = SERVER_USERNAME "/data";
-char token[] = "your Blynk auth token";
+char token[] = "--- your blynk token ---";
 WiFiClient esp_client;
 PubSubClient client(esp_client);
 WiFiClientSecure httpsClient;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
 unsigned long last_millis = 0;
+unsigned long last_time_update = 0;
 const char host[] = "docs.google.com";
 const int httpsPort = 443; 
-String link = "/forms/d/e/ -- your google forms token -- /formResponse?usp=pp_url&";
+String link = "/forms/d/e/--- your google form token ---/formResponse?usp=pp_url&";
 const char fingerprint[] = "79 d5 16 07 e2 38 0e 84 51 4f f2 7b 52 98 9b 9d 01 fc b1 e8";
 
 
-void setupWIFI() {
+bool setupWIFI() {
   // если устройство уже подключено к сети - ничего не делаем
-  if (WiFi.status() == WL_CONNECTED) return; 
-  // иначе - пытаемся подключиться (на самом деле сделано больше для красоты,
-  // ведь esp автоматически переподключается к сети):
+  if (WiFi.status() == WL_CONNECTED) return true; 
+  // иначе - пытаемся подключиться в течение трех секунд 
+  // (на самом деле сделано больше для красоты, ведь 
+  // esp автоматически переподключается к сети):
   DEBUG_PRINT("--- WiFi ---\nConnecting to ");
   DEBUG_PRINT(NETWORK_SSID "\n");
   WiFi.begin(NETWORK_SSID, NETWORK_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
+  int r = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (r<6)) {
     delay(500);
     DEBUG_PRINT(".");
+    r++;
   }
-  DEBUG_PRINT("\nWiFi connected!     IP address: ");
-  DEBUG_PRINT(WiFi.localIP());
-  DEBUG_PRINT("\n");
+  if (WiFi.status() == WL_CONNECTED) {
+    DEBUG_PRINT("\nWiFi connected!     IP address: ");
+    DEBUG_PRINT(WiFi.localIP());
+    DEBUG_PRINT("\n");
+    return true;
+  }
+  else {
+    Serial.print("No network.");
+    delay(500);
+    return false;
+  }  
 }
 
 
@@ -91,36 +107,45 @@ void sendMQTT(String s);
 void sendBlynk(String parsedData[]);
 void sendHTTPS(String parsedData[]);
 
+
 // данные поступают в виде x,y,z,a,b,c (шесть переменных, разделенных запятой)
 // температура, влажность, CO2, движение, освещенность, шум
-void readFromArduino() { // функция чтения и передачи данных
+void readFromArduino(bool flag) { // функция чтения и передачи данных
   Serial.print("$get");
-  String s = Serial.readString(); // читаем строку из Serial
-  String parsedData[6]; // массив для передаваемых данных
-  if (s.length() > 5) { // если есть ответ от Arduino
-    int l = s.length(); // длина строки минус "\n"
-    int n = 0; // счётчик индекса массива
-    for (int i = 0; i < l; i++) {
-      if (s[i] == ',') {
-        n++; // если обнаружен разделитель - переходим в следующую ячейку
-      }
-      else {
-        parsedData[n] += s[i]; // иначе продолжаем писать в нынешнюю
+  if (flag) { // если есть подключение к сети, то начинаем обрабатывать строку
+    String s = Serial.readString(); // читаем строку из Serial
+    String parsedData[6]; // массив для передаваемых данных
+    if (s.length() > 5) { // если есть ответ от Arduino
+      int l = s.length(); // длина строки
+      int n = 0; // счётчик индекса массива
+      for (int i = 0; i < l; i++) {
+        if (s[i] == ',') {
+          n++; // если обнаружен разделитель - переходим в следующую ячейку
+        }
+        else {
+          parsedData[n] += s[i]; // иначе продолжаем писать в нынешнюю
+        }
       }
     }
-  }
-  // если Arduino не отвечает (не подключено) - отправляем тестовые сообщения
-  else {
-    DEBUG_PRINT("\nNo data from Arduino :c\n");
-    s = "testMQTT";
-    for (int i = 0; i < 6; i++) {
-      parsedData[i] = "test"+String(i);
+    // если Arduino не отвечает (не подключено) - отправляем тестовые сообщения
+    else {
+      DEBUG_PRINT("\nNo data from Arduino :c\n");
+      s = "testMQTT";
+      for (int i = 0; i < 6; i++) {
+        parsedData[i] = "test"+String(i);
+      }
     }
+    sendMQTT(s);            // передаем сообщение от Arduino в MQTT
+    sendBlynk(parsedData);  // передаем сообщение от Arduino в Blynk
+    sendHTTPS(parsedData);  // передаем сообщение от Arduino в Google Sheets
+    DEBUG_PRINT("All data has been sent to services!\n\n");
   }
-  sendMQTT(s);            // передаем сообщение от Arduino в MQTT
-  sendBlynk(parsedData);  // передаем сообщение от Arduino в Blynk
-  sendHTTPS(parsedData);  // передаем сообщение от Arduino в Google Sheets
-  DEBUG_PRINT("All data has been sent to services!\n\n");
+  else { // если подключения к сети нет - просто очищаем буфер
+    Serial.readString();
+    DEBUG_PRINT("No connection, but data has been stored to SD.\n\n");
+  }
+  // такая логика реализована для того, чтобы информация точно записалась на карту
+  // памяти ардуино, вне зависимости от наличия подключения к сети
 }
 
 
@@ -146,6 +171,17 @@ void sendBlynk(String data[]) {
     Blynk.virtualWrite(V0 + i, data[i]);  // передаем информацию в Blynk
   }
   Blynk.virtualWrite(V6, millis()/1000);
+}
+
+
+void sendTime() {
+  timeClient.update();
+  Serial.print("$time");
+  while (!Serial.available()) {}
+  if (Serial.readString() == "$ready"){
+    Serial.print(timeClient.getEpochTime() + 60*60*3);
+  }
+  delay(1000);
 }
 
 
@@ -189,9 +225,16 @@ void callback(char* topic, byte* payload, int length){
 void setup() {
   Serial.begin(9600); // инициализация Serial
   Serial.setTimeout(500); // таймаут приёма данных из Serial
-  client.setServer(SERVER_NAME, SERVER_PORT); // задание параметров подключения к mqtt
+  delay(5000); // поуза для того чтобы Arduino полностью запустился
+  setupWIFI(); // настройка подключения к WiFi
+  
+  client.setServer(SERVER_NAME, SERVER_PORT); // задание параметров подключения к MQTT
   Blynk.begin(token, NETWORK_SSID, NETWORK_PASS); // инициализация Blynk
-  setupHTTPS();
+  timeClient.begin(); // инициализация NTP клиента
+  setupHTTPS(); // задание параметров подключения к HTTPS
+  sendTime(); // передача RTC
+  delay(1000);
+  Serial.print("done setup.");
   // client.setCallback(callback); // настройка callback'а, сейчас не используется
 }
 
@@ -199,12 +242,17 @@ void setup() {
 void loop() {
   if (millis() - last_millis > 5000) { // раз в пять секунд запускаем процесс обработки информации
     last_millis = millis();
-    setupWIFI(); // проверяем подключение к сети
-    setupMQTT(); // проверяем подключение к MQTT
-    sendMillis(); // передаем в топик debug кол-во секунд от запуска
-    readFromArduino(); // запрашиваем данные от Arduino, читаем, обрабатываем и передаем их
-    client.loop(); // для поддержания работы MQTT
-    Blynk.run(); // для поддержания работы Blynk
+    bool wifiConnected = setupWIFI(); // проверяем подключение к сети
+    if (wifiConnected) {    
+      setupMQTT(); // проверяем подключение к MQTT
+      sendMillis(); // передаем в топик debug кол-во секунд от запуска
+      client.loop(); // для поддержания работы MQTT
+      Blynk.run(); // для поддержания работы Blynk
+    }
+    readFromArduino(wifiConnected); // запрашиваем данные от Arduino, читаем, обрабатываем и передаем их
   }
-  // todo подключение к нескольким сетям (по очереди, если какая-то недоступна)
+  if (millis() - last_time_update > 300000) { // раз в пять минут обновляем время на Arduino
+    last_time_update = millis();
+    sendTime(); // передача RTC
+  }
 }
