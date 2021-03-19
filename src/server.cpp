@@ -37,13 +37,14 @@ const int httpsPort = 443;
 String link = "/forms/d/e/--- your google form token ---/formResponse?usp=pp_url&";
 const char fingerprint[] = "79 d5 16 07 e2 38 0e 84 51 4f f2 7b 52 98 9b 9d 01 fc b1 e8";
 
-
-bool setupWIFI() {
+/*
+void setupWIFI() {
   // если устройство уже подключено к сети - ничего не делаем
-  if (WiFi.status() == WL_CONNECTED) return true; 
+  if (WiFi.status() == WL_CONNECTED) return; 
   // иначе - пытаемся подключиться в течение трех секунд 
   // (на самом деле сделано больше для красоты, ведь 
   // esp автоматически переподключается к сети):
+  WiFi.mode(WIFI_STA); // отключаем точку доступа
   DEBUG_PRINT("--- WiFi ---\nConnecting to ");
   DEBUG_PRINT(NETWORK_SSID "\n");
   WiFi.begin(NETWORK_SSID, NETWORK_PASS);
@@ -57,18 +58,29 @@ bool setupWIFI() {
     DEBUG_PRINT("\nWiFi connected!     IP address: ");
     DEBUG_PRINT(WiFi.localIP());
     DEBUG_PRINT("\n");
-    return true;
   }
   else {
     Serial.print("No network.");
     delay(500);
-    return false;
   }  
+}
+*/
+
+void setupWIFI() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(NETWORK_SSID, NETWORK_PASS);
+  byte r = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (r<50)) {
+    delay(500);
+    DEBUG_PRINT(".");
+    r++;
+  }
 }
 
 
 void setupMQTT() {
-  while (!client.connected()) {
+  byte r = 0;
+  while ((!client.connected()) && r < 3) {
     DEBUG_PRINT("\n--- MQTT ---\nAttempting MQTT connection...\n");
     // создаем уникальный идентификатор устройства
     String clientId = "ESP8266";
@@ -84,9 +96,10 @@ void setupMQTT() {
       // если не удалось подключиться - выводим код ошибки
       DEBUG_PRINT("\nFailed, error=");
       DEBUG_PRINT(client.state());
-      DEBUG_PRINT(" Next try in 5 seconds\n");
-      // ждем 5 секунд для следующей поппытки
-      delay(5000);
+      DEBUG_PRINT(" Next try in 1 second\n");
+      // ждем секунду для следующей попытки
+      r++;
+      delay(1000);
     }
   }
 }
@@ -176,12 +189,16 @@ void sendBlynk(String data[]) {
 
 void sendTime() {
   timeClient.update();
+  byte r = 0;
   Serial.print("$time");
-  while (!Serial.available()) {}
+  while ((!Serial.available()) && (r < 100)) {
+    delay(50);
+    r++;
+  }
   if (Serial.readString() == "$ready"){
     Serial.print(timeClient.getEpochTime() + 60*60*3);
   }
-  delay(1000);
+  delay(500);
 }
 
 
@@ -225,16 +242,22 @@ void callback(char* topic, byte* payload, int length){
 void setup() {
   Serial.begin(9600); // инициализация Serial
   Serial.setTimeout(500); // таймаут приёма данных из Serial
-  delay(5000); // поуза для того чтобы Arduino полностью запустился
-  setupWIFI(); // настройка подключения к WiFi
-  
+  delay(5000);
+  setupWIFI(); // настройка подключения к WiFi, таймаут - 25 секунд
+  if (!WiFi.isConnected()) Serial.print("Can't init without network.");
+  while (!WiFi.isConnected()) {
+    delay(1000);
+    Serial.print("No network.");
+  }
   client.setServer(SERVER_NAME, SERVER_PORT); // задание параметров подключения к MQTT
-  Blynk.begin(token, NETWORK_SSID, NETWORK_PASS); // инициализация Blynk
+  Blynk.config(token); // инициализация Blynk
   timeClient.begin(); // инициализация NTP клиента
   setupHTTPS(); // задание параметров подключения к HTTPS
+  setupMQTT(); // подключение к MQTT
   sendTime(); // передача RTC
-  delay(1000);
-  Serial.print("done setup.");
+  delay(500);
+  Serial.print("Done setup.");
+  delay(500);
   // client.setCallback(callback); // настройка callback'а, сейчас не используется
 }
 
@@ -242,17 +265,20 @@ void setup() {
 void loop() {
   if (millis() - last_millis > 5000) { // раз в пять секунд запускаем процесс обработки информации
     last_millis = millis();
-    bool wifiConnected = setupWIFI(); // проверяем подключение к сети
-    if (wifiConnected) {    
+    if (WiFi.isConnected()) { // если подключены к сети - то передаем данные в интернет, иначе только пишем на SD
       setupMQTT(); // проверяем подключение к MQTT
       sendMillis(); // передаем в топик debug кол-во секунд от запуска
-      client.loop(); // для поддержания работы MQTT
-      Blynk.run(); // для поддержания работы Blynk
     }
-    readFromArduino(wifiConnected); // запрашиваем данные от Arduino, читаем, обрабатываем и передаем их
+    else {
+      Serial.print("No network.");
+      delay(500);
+    }
+    readFromArduino(WiFi.isConnected()); // запрашиваем данные от Arduino, читаем, обрабатываем и передаем их
   }
   if (millis() - last_time_update > 300000) { // раз в пять минут обновляем время на Arduino
     last_time_update = millis();
-    sendTime(); // передача RTC
+    if (WiFi.isConnected()) sendTime(); // передача RTC
   }
+  client.loop(); // для поддержания работы MQTT
+  Blynk.run(); // для поддержания работы Blynk
 }
